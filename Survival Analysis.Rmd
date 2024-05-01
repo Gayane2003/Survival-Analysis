@@ -1,0 +1,217 @@
+---
+title: "Survival Analysis"
+author: "Gayane Ohanjanyan"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo = F, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(survival)
+library(ggpubr)
+```
+
+
+# **Probability of Survival for Different Distributions - AFT Model**
+
+```{r, echo = F, message=FALSE, warning=FALSE, fig.width=12, fig.height=11} 
+telco <- read.csv("telco.csv")
+telco$churn <- ifelse(telco$churn == "Yes", 1, 0)
+
+# Define a vector of distributions
+dists <- names(survreg.distributions)
+
+# Create an empty dataframe to store results
+results <- data.frame(Distribution = character(), AIC = numeric(), BIC = numeric())
+plot_list <- list()
+
+# Fit AFT models for each distribution
+for (i in seq_along(dists)) {
+  dist <- dists[i]
+  
+  # Fit the AFT model
+  reg_m <- survreg(Surv(tenure, churn) ~ ., data = telco, dist = dist)
+  pred <- predict(reg_m, type = "response")
+
+  # Get AIC and BIC
+  AIC_val <- AIC(reg_m)
+  BIC_val <- BIC(reg_m)
+  
+  # Append results to dataframe
+  results <- rbind(results, data.frame(Distribution = dist, AIC = AIC_val, BIC = BIC_val))
+  
+  probs <- seq(0.1, 1, length.out = length(pred))
+  quantiles <- qexp(p = probs, rate = 1/pred, lower.tail = FALSE) 
+  df <- data.frame(Probabilities = probs, quant = quantiles)   
+  
+  a <- ggplot(df, aes(x = quant, y = Probabilities)) + 
+    geom_line() +
+    ggtitle(paste(dist)) +
+    labs(x = "", y= "") + 
+    theme_minimal()
+  plot_list[[length(plot_list) + 1]] <- a
+}
+
+# Combine plots into one using ggarrange
+ggarrange(plotlist = plot_list, ncol = 2, nrow = 5)
+```
+
+
+# **Results of AIC and BIC statistical measures.**
+```{r, echo = F, message=FALSE, warning=FALSE}
+# Find the distribution with the minimum AIC and BIC
+min_AIC_dist <- results$Distribution[which.min(results$AIC)]
+min_BIC_dist <- results$Distribution[which.min(results$BIC)]
+
+# Get the corresponding AIC and BIC values
+min_AIC <- min(results$AIC)
+min_BIC <- min(results$BIC)
+
+# Print the results
+cat("Distribution with minimum AIC:", min_AIC_dist, "-", min_AIC, "\n")
+
+cat("Distribution with minimum BIC:", min_BIC_dist, "-", min_BIC, "\n")
+
+```
+All the models have very small p values, which indicates that regardless of the chosen distributions, the models are statistically significant. Moreover, the models clearly highlight many statistically significant features, also there are some features which do not play huge role(have small p values) and can be dropped to have better and more accurate models.
+However, as we look closely we will find that the Loggaussian distribution have the smallest p value, and can be considered the best choice. In addition, the AIC and BIC statistical measures have used to find the most accurate model, and according to the results, Loggaussian performs the best.
+
+
+# **AFT Model with Loggaussian distribution**
+```{r, echo = F, message=FALSE, warning=FALSE}
+significant_features <- c("age", "marital", "address", "internet", "custcat")
+
+# Create the formula using the significant features
+formula <- as.formula(paste("Surv(tenure, churn) ~", paste(significant_features, collapse = " + ")))
+
+# Fit the survival regression model with the selected features
+gaus_reg <- survreg(formula, data = telco, dist = "loggaussian")
+summary(gaus_reg)
+
+```
+**Interpretation of Coefficients:**
+
+- Intercept: This represents the baseline value of the survival time when all other predictors are zero. In this case, it's 2.53948.
+ 
+ - Age: For each one-unit increase in age, the log of the survival time increases by 0.03606. This suggests that older individuals tend to have longer survival times.
+ 
+- MaritalUnmarried: Being unmarried (compared to being married) is associated with a decrease in the log of survival time by 0.45526 units. This suggests that unmarried individuals may have shorter survival times compared to married individuals.
+
+- Address: Each one-unit increase in the number of addresses is associated with an increase in the log of survival time by 0.04444 units.
+
+- InternetYes: Having internet service (compared to not having internet service) is associated with a decrease in the log of survival time by 0.88795 units. This suggests that individuals with internet service may have shorter survival times.
+
+- CustcatE-service, custcatPlus service, custcatTotal service: These coefficients represent the effect of different customer categories compared to a reference category on the log of survival time.
+
+**Model Fit:**  
+The model's goodness-of-fit is assessed using likelihood-based statistics such as log-likelihood, chi-square, and p-values. In this case, the chi-square value is significant (p = 3.3e-55), indicating that the model significantly improves the fit compared to an intercept-only model.
+
+
+
+
+
+```{r, echo = F, message=FALSE, warning=FALSE}
+expected_tenure <- predict(gaus_reg, newdata = telco, type = "response")
+MM = 1300
+r = 0.1
+
+CLV <- numeric(length(expected_tenure))
+for (i in seq_along(expected_tenure)) {
+  CLV[i] <- MM * sum(expected_tenure[i:length(expected_tenure)] / (1 + r / 12)^(seq(1, length(expected_tenure) - i + 1) - 1))
+}
+
+telco$expected_tenure = expected_tenure
+telco$CLV = CLV
+```
+
+# **CLV Analysis**
+```{r, echo = F, message=FALSE, warning=FALSE}
+# Create a CLV plot for marital status
+clv_plot_marital <- ggplot(telco, aes(x = CLV, fill = marital)) +
+  geom_histogram(bins = 20) +
+  labs(title = "CLV by Marital Status",
+       x = "Marital Status",
+       y = "CLV") +
+  theme_minimal()
+
+# Print the CLV plot
+clv_plot_marital
+```
+In the Telco dataset, the Customer Lifetime Value (CLV) tends to be higher for married individuals compared to unmarried individuals. This observation suggests that marital status may be a significant factor influencing CLV within the Telco customer base. A possoble reason can be that married couples may be more likely to subscribe to bundled services such as family plans, which can increase their overall CLV.
+
+
+```{r, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+# Create a CLV plot for custcat status
+clv_plot_custcat <- ggplot(telco, aes(x = CLV, fill = custcat)) +
+  geom_histogram(bins = 30) +
+  labs(title = "CLV by Custcat",
+       x = "Custcat",
+       y = "CLV") +
+  theme_minimal()
+
+# Print the CLV plot
+print(clv_plot_custcat)
+```
+In the CLV plot for different customer categories (Custcat) in the Telco dataset, it's evident that customers categorized under "Basic service" have the highest CLV, followed by those categorized under "E-service," "Plus service," and "Total service" in descending order. This ordering may suggest that Basic service subscribers may be enrolled in long-term contracts or higher-priced plans, resulting in higher CLV compared to other customer categories.
+
+
+
+
+```{r, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+# Create a density plot for retire and CLV
+density_plot <- ggplot(telco, aes(x = CLV, fill = internet)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Density Plot of Internet and CLV",
+       x = "Internet",
+       y = "CLV") +
+  theme_minimal()
+
+# Print the density plot
+print(density_plot)
+
+```
+
+The density plot illustrates the distribution of Customer Lifetime Value (CLV) across different internet subscription statuses in the Telco dataset. While the CLV distributions for customers with and without internet subscriptions are largely similar, there appears to be a slightly higher density of CLV values for customers without internet subscriptions. This observation suggests that customers without internet subscriptions may have a slightly higher CLV compared to those with internet subscriptions in the Telco dataset.
+
+
+
+# **Conclusion**
+```{r, echo = F, message=FALSE, warning=FALSE}
+# Calculate Total CLV for the Entire Population
+total_clv <- sum(telco$CLV)
+
+linear_pred <- predict(gaus_reg, type = "lp", newdata = telco)
+shape_param <- gaus_reg$scale
+telco$surv_prob <- plogis(linear_pred / shape_param)
+
+at_risk_subscribers <- sum(telco$surv_prob < 0.96)
+
+
+retention_cost_per_subscriber <- 100 # Placeholder value, replace with actual cost
+annual_retention_budget <- at_risk_subscribers * retention_cost_per_subscriber
+
+# Print the results
+cat("Total CLV:", total_clv, "\n")
+cat("Number of At-Risk Subscribers within a year:", at_risk_subscribers, "\n")
+cat("Annual Retention Budget:", annual_retention_budget, "\n")
+```
+Improving customer retention involves various strategies aimed at enhancing customer satisfaction, engagement, and loyalty. Here are some suggestions for retention strategies:
+
+
+- Customer Education: Educate customers about the full range of your products or services and how they can derive maximum value from them. Offer tutorials, guides, or webinars to help customers make the most of their purchase.
+
+- Personalized Communication: Tailor communication and offers based on individual customer preferences, behavior, and lifecycle stage. Use personalized emails, messages, or targeted advertising to make customers feel valued and understood.
+
+- Community Building: Foster a sense of community among your customers by creating forums, social media groups, or online communities where they can connect, share experiences, and support each other.
+
+
+
+
+
+
+
